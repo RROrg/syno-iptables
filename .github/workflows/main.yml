@@ -54,6 +54,9 @@ jobs:
           # checkout 6.2.4
           - version: 6.2 
             platform: v1000 
+          # checkout 6.2.4
+          - version: 6.2
+            platform: rtd1296
 
           - version: 7.1 
             platform: apollolake
@@ -77,6 +80,10 @@ jobs:
             platform: r1000
           - version: 7.1
             platform: v1000
+          - version: 7.1
+            platform: rtd1296
+          - version: 7.1 
+            platform: rtd1619b
 
           - version: 7.2 
             platform: apollolake
@@ -100,6 +107,10 @@ jobs:
             platform: r1000
           - version: 7.2
             platform: v1000
+          - version: 7.2
+            platform: rtd1296
+          - version: 7.2 
+            platform: rtd1619b
 
     runs-on: ubuntu-latest
 
