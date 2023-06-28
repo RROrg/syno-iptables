@@ -15,6 +15,12 @@ obj-$(CONFIG_IP6_NF_NAT) += ip6table_nat.o
 nf_defrag_ipv6-y := nf_defrag_ipv6_hooks.o nf_conntrack_reasm.o
 obj-$(CONFIG_NF_DEFRAG_IPV6) += nf_defrag_ipv6.o
 
+ifeq ($(CONFIG_NF_SOCKET_IPV6),m)
+  EXTRA_CFLAGS+=-DCONFIG_NF_SOCKET_IPV6=m
+endif
+ifeq ($(CONFIG_NF_TPROXY_IPV6),m)
+  EXTRA_CFLAGS+=-DCONFIG_NF_TPROXY_IPV6=m
+endif
 obj-$(CONFIG_NF_SOCKET_IPV6) += nf_socket_ipv6.o
 obj-$(CONFIG_NF_TPROXY_IPV6) += nf_tproxy_ipv6.o
 

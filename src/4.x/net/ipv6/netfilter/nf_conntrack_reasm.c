@@ -64,7 +64,7 @@ struct nf_ct_frag6_skb_cb
 static struct inet_frags nf_frags;
 
 #ifdef CONFIG_SYSCTL
-
+#if LINUX_VERSION_CODE > KERNEL_VERSION(4, 4, 59)
 static struct ctl_table nf_ct_frag6_sysctl_table[] = {
 	{
 		.procname	= "nf_conntrack_frag6_timeout",
@@ -91,7 +91,37 @@ static struct ctl_table nf_ct_frag6_sysctl_table[] = {
 	},
 	{ }
 };
+#else
+static int zero;
 
+static struct ctl_table nf_ct_frag6_sysctl_table[] = {
+	{
+		.procname	= "nf_conntrack_frag6_timeout",
+		.data		= &init_net.nf_frag.frags.timeout,
+		.maxlen		= sizeof(unsigned int),
+		.mode		= 0644,
+		.proc_handler	= proc_dointvec_jiffies,
+	},
+	{
+		.procname	= "nf_conntrack_frag6_low_thresh",
+		.data		= &init_net.nf_frag.frags.low_thresh,
+		.maxlen		= sizeof(unsigned int),
+		.mode		= 0644,
+		.proc_handler	= proc_dointvec_minmax,
+		.extra1		= &zero,
+		.extra2		= &init_net.nf_frag.frags.high_thresh
+	},
+	{
+		.procname	= "nf_conntrack_frag6_high_thresh",
+		.data		= &init_net.nf_frag.frags.high_thresh,
+		.maxlen		= sizeof(unsigned int),
+		.mode		= 0644,
+		.proc_handler	= proc_dointvec_minmax,
+		.extra1		= &init_net.nf_frag.frags.low_thresh
+	},
+	{ }
+};
+#endif
 static int nf_ct_frag6_sysctl_register(struct net *net)
 {
 	struct ctl_table *table;
@@ -115,8 +145,11 @@ static int nf_ct_frag6_sysctl_register(struct net *net)
 	hdr = register_net_sysctl(net, "net/netfilter", table);
 	if (hdr == NULL)
 		goto err_reg;
-
+#if LINUX_VERSION_CODE > KERNEL_VERSION(4, 4, 59)
 	net->nf_frag_frags_hdr = hdr;
+#else
+	net->nf_frag.sysctl.frags_hdr = hdr;
+#endif
 	return 0;
 
 err_reg:
@@ -129,9 +162,13 @@ err_alloc:
 static void __net_exit nf_ct_frags6_sysctl_unregister(struct net *net)
 {
 	struct ctl_table *table;
-
+#if LINUX_VERSION_CODE > KERNEL_VERSION(4, 4, 59)
 	table = net->nf_frag_frags_hdr->ctl_table_arg;
 	unregister_net_sysctl_table(net->nf_frag_frags_hdr);
+#else
+	table = net->nf_frag.sysctl.frags_hdr->ctl_table_arg;
+	unregister_net_sysctl_table(net->nf_frag.sysctl.frags_hdr);
+#endif
 	if (!net_eq(net, &init_net))
 		kfree(table);
 }
@@ -150,7 +187,24 @@ static inline u8 ip6_frag_ecn(const struct ipv6hdr *ipv6h)
 {
 	return 1 << (ipv6_get_dsfield(ipv6h) & INET_ECN_MASK);
 }
+#if LINUX_VERSION_CODE > KERNEL_VERSION(4, 4, 59)
+#else
+static unsigned int nf_hash_frag(__be32 id, const struct in6_addr *saddr,
+				 const struct in6_addr *daddr)
+{
+	net_get_random_once(&nf_frags.rnd, sizeof(nf_frags.rnd));
+	return jhash_3words(ipv6_addr_hash(saddr), ipv6_addr_hash(daddr),
+			    (__force u32)id, nf_frags.rnd);
+}
 
+static unsigned int nf_hashfn(const struct inet_frag_queue *q)
+{
+	const struct frag_queue *nq;
+
+	nq = container_of(q, struct frag_queue, q);
+	return nf_hash_frag(nq->id, &nq->saddr, &nq->daddr);
+}
+#endif
 static void nf_skb_free(struct sk_buff *skb)
 {
 	if (NFCT_FRAG6_CB(skb)->orig)
@@ -164,11 +218,15 @@ static void nf_ct_frag6_expire(unsigned long data)
 
 	fq = container_of((struct inet_frag_queue *)data, struct frag_queue, q);
 	net = container_of(fq->q.net, struct net, nf_frag.frags);
-
+#if LINUX_VERSION_CODE > KERNEL_VERSION(4, 4, 59)
 	ip6_expire_frag_queue(net, fq);
+#else
+	ip6_expire_frag_queue(net, fq, &nf_frags);
+#endif
 }
 
 /* Creation primitives. */
+#if LINUX_VERSION_CODE > KERNEL_VERSION(4, 4, 59)
 static struct frag_queue *fq_find(struct net *net, __be32 id, u32 user,
 				  const struct ipv6hdr *hdr, int iif)
 {
@@ -187,7 +245,34 @@ static struct frag_queue *fq_find(struct net *net, __be32 id, u32 user,
 
 	return container_of(q, struct frag_queue, q);
 }
+#else
+static inline struct frag_queue *fq_find(struct net *net, __be32 id,
+					 u32 user, struct in6_addr *src,
+					 struct in6_addr *dst, int iif, u8 ecn)
+{
+	struct inet_frag_queue *q;
+	struct ip6_create_arg arg;
+	unsigned int hash;
 
+	arg.id = id;
+	arg.user = user;
+	arg.src = src;
+	arg.dst = dst;
+	arg.iif = iif;
+	arg.ecn = ecn;
+
+	local_bh_disable();
+	hash = nf_hash_frag(id, src, dst);
+
+	q = inet_frag_find(&net->nf_frag.frags, &nf_frags, &arg, hash);
+	local_bh_enable();
+	if (IS_ERR_OR_NULL(q)) {
+		inet_frag_maybe_warn_overflow(q, pr_fmt());
+		return NULL;
+	}
+	return container_of(q, struct frag_queue, q);
+}
+#endif
 
 static int nf_ct_frag6_queue(struct frag_queue *fq, struct sk_buff *skb,
 			     const struct frag_hdr *fhdr, int nhoff)
@@ -335,7 +420,11 @@ found:
 	return 0;
 
 discard_fq:
+#if LINUX_VERSION_CODE > KERNEL_VERSION(4, 4, 59)
 	inet_frag_kill(&fq->q);
+#else
+	inet_frag_kill(&fq->q, &nf_frags);
+#endif
 err:
 	return -1;
 }
@@ -356,7 +445,11 @@ nf_ct_frag6_reasm(struct frag_queue *fq, struct net_device *dev)
 	int    payload_len;
 	u8 ecn;
 
+#if LINUX_VERSION_CODE > KERNEL_VERSION(4, 4, 59)
 	inet_frag_kill(&fq->q);
+#else
+	inet_frag_kill(&fq->q, &nf_frags);
+#endif
 
 	WARN_ON(head == NULL);
 	WARN_ON(NFCT_FRAG6_CB(head)->offset != 0);
@@ -427,7 +520,9 @@ nf_ct_frag6_reasm(struct frag_queue *fq, struct net_device *dev)
 		else if (head->ip_summed == CHECKSUM_COMPLETE)
 			head->csum = csum_add(head->csum, fp->csum);
 		head->truesize += fp->truesize;
+#if LINUX_VERSION_CODE > KERNEL_VERSION(4, 4, 59)
 		fp->sk = NULL;
+#endif
 	}
 	sub_frag_mem_limit(fq->q.net, head->truesize);
 
@@ -446,7 +541,9 @@ nf_ct_frag6_reasm(struct frag_queue *fq, struct net_device *dev)
 					  head->csum);
 
 	fq->q.fragments = NULL;
+#if LINUX_VERSION_CODE > KERNEL_VERSION(4, 4, 59)
 	fq->q.rb_fragments = RB_ROOT;
+#endif
 	fq->q.fragments_tail = NULL;
 
 	/* all original skbs are linked into the NFCT_FRAG6_CB(head).orig */
@@ -575,7 +672,7 @@ struct sk_buff *nf_ct_frag6_gather(struct net *net, struct sk_buff *skb, u32 use
 	skb_set_transport_header(clone, fhoff);
 	hdr = ipv6_hdr(clone);
 	fhdr = (struct frag_hdr *)skb_transport_header(clone);
-
+#if LINUX_VERSION_CODE > KERNEL_VERSION(4, 4, 59)
 	if (clone->len - skb_network_offset(clone) < IPV6_MIN_MTU &&
 	    fhdr->frag_off & htons(IP6_MF))
 		goto ret_orig;
@@ -583,6 +680,10 @@ struct sk_buff *nf_ct_frag6_gather(struct net *net, struct sk_buff *skb, u32 use
 	skb_orphan(skb);
 	fq = fq_find(net, fhdr->identification, user, hdr,
 		     skb->dev ? skb->dev->ifindex : 0);
+#else
+	fq = fq_find(net, fhdr->identification, user, &hdr->saddr, &hdr->daddr,
+		     skb->dev ? skb->dev->ifindex : 0, ip6_frag_ecn(hdr));
+#endif
 	if (fq == NULL) {
 		pr_debug("Can't find and can't create new queue\n");
 		goto ret_orig;
@@ -593,7 +694,11 @@ struct sk_buff *nf_ct_frag6_gather(struct net *net, struct sk_buff *skb, u32 use
 	if (nf_ct_frag6_queue(fq, clone, fhdr, nhoff) < 0) {
 		spin_unlock_bh(&fq->q.lock);
 		pr_debug("Can't insert skb to queue\n");
+#if LINUX_VERSION_CODE > KERNEL_VERSION(4, 4, 59)
 		inet_frag_put(&fq->q);
+#else
+		inet_frag_put(&fq->q, &nf_frags);
+#endif
 		goto ret_orig;
 	}
 
@@ -604,8 +709,11 @@ struct sk_buff *nf_ct_frag6_gather(struct net *net, struct sk_buff *skb, u32 use
 			pr_debug("Can't reassemble fragmented packets\n");
 	}
 	spin_unlock_bh(&fq->q.lock);
-
+#if LINUX_VERSION_CODE > KERNEL_VERSION(4, 4, 59)
 	inet_frag_put(&fq->q);
+#else
+	inet_frag_put(&fq->q, &nf_frags);
+#endif
 	return ret_skb;
 
 ret_orig:
@@ -634,6 +742,7 @@ static int nf_ct_net_init(struct net *net)
 	net->nf_frag.frags.high_thresh = IPV6_FRAG_HIGH_THRESH;
 	net->nf_frag.frags.low_thresh = IPV6_FRAG_LOW_THRESH;
 	net->nf_frag.frags.timeout = IPV6_FRAG_TIMEOUT;
+#if LINUX_VERSION_CODE > KERNEL_VERSION(4, 4, 59)
 	net->nf_frag.frags.f = &nf_frags;
 
 	res = inet_frags_init_net(&net->nf_frag.frags);
@@ -642,13 +751,25 @@ static int nf_ct_net_init(struct net *net)
 	res = nf_ct_frag6_sysctl_register(net);
 	if (res < 0)
 		inet_frags_exit_net(&net->nf_frag.frags);
+#else
+	res = inet_frags_init_net(&net->nf_frag.frags);
+	if (res)
+		return res;
+	res = nf_ct_frag6_sysctl_register(net);
+	if (res)
+		inet_frags_uninit_net(&net->nf_frag.frags);
+#endif
 	return res;
 }
 
 static void nf_ct_net_exit(struct net *net)
 {
 	nf_ct_frags6_sysctl_unregister(net);
+#if LINUX_VERSION_CODE > KERNEL_VERSION(4, 4, 59)
 	inet_frags_exit_net(&net->nf_frag.frags);
+#else
+	inet_frags_exit_net(&net->nf_frag.frags, &nf_frags);
+#endif
 }
 
 static struct pernet_operations nf_ct_net_ops = {
@@ -659,14 +780,23 @@ static struct pernet_operations nf_ct_net_ops = {
 int nf_ct_frag6_init(void)
 {
 	int ret = 0;
-
+#if LINUX_VERSION_CODE > KERNEL_VERSION(4, 4, 59)
+#else
+	nf_frags.hashfn = nf_hashfn;
+#endif
 	nf_frags.constructor = ip6_frag_init;
 	nf_frags.destructor = NULL;
 	nf_frags.skb_free = nf_skb_free;
 	nf_frags.qsize = sizeof(struct frag_queue);
+#if LINUX_VERSION_CODE > KERNEL_VERSION(4, 4, 59)
+#else
+	nf_frags.match = ip6_frag_match;
+#endif
 	nf_frags.frag_expire = nf_ct_frag6_expire;
 	nf_frags.frags_cache_name = nf_frags_cache_name;
+#if LINUX_VERSION_CODE > KERNEL_VERSION(4, 4, 59)
 	nf_frags.rhash_params = ip6_rhash_params;
+#endif
 	ret = inet_frags_init(&nf_frags);
 	if (ret)
 		goto out;

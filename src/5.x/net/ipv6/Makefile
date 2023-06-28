@@ -11,6 +11,7 @@
 #		raw.o icmp.o mcast.o reassembly.o tcp_ipv6.o ping.o \
 #		exthdrs.o datagram.o ip6_flowlabel.o inet6_connection_sock.o \
 #		udp_offload.o seg6.o fib6_notifier.o rpl.o
+ipv6-objs := udp.o
 #
 #ipv6-offload :=	ip6_offload.o tcpv6_offload.o exthdrs_offload.o
 #

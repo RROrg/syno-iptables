@@ -38,7 +38,11 @@ MODULE_LICENSE("GPL");
 MODULE_AUTHOR("Harald Welte <laforge@netfilter.org>");
 MODULE_DESCRIPTION("{ip,ip6,arp,eb}_tables backend module");
 
+#if LINUX_VERSION_CODE > KERNEL_VERSION(4, 4, 59)
 #define XT_PCPU_BLOCK_SIZE 4096
+#else
+#define SMP_ALIGN(x) (((x) + SMP_CACHE_BYTES-1) & ~(SMP_CACHE_BYTES-1))
+#endif
 
 struct compat_delta {
 	unsigned int offset; /* offset in kernel */
@@ -207,10 +211,10 @@ struct xt_match *
 xt_request_find_match(uint8_t nfproto, const char *name, uint8_t revision)
 {
 	struct xt_match *match;
-
+#if LINUX_VERSION_CODE > KERNEL_VERSION(4, 4, 59)
 	if (strnlen(name, XT_EXTENSION_MAXNAMELEN) == XT_EXTENSION_MAXNAMELEN)
 		return ERR_PTR(-EINVAL);
-
+#endif
 	match = xt_find_match(nfproto, name, revision);
 	if (IS_ERR(match)) {
 		request_module("%st_%s", xt_prefix[nfproto], name);
@@ -252,10 +256,10 @@ EXPORT_SYMBOL(xt_find_target);
 struct xt_target *xt_request_find_target(u8 af, const char *name, u8 revision)
 {
 	struct xt_target *target;
-
+#if LINUX_VERSION_CODE > KERNEL_VERSION(4, 4, 59)
 	if (strnlen(name, XT_EXTENSION_MAXNAMELEN) == XT_EXTENSION_MAXNAMELEN)
 		return ERR_PTR(-EINVAL);
-
+#endif
 	target = xt_find_target(af, name, revision);
 	if (IS_ERR(target)) {
 		request_module("%st_%s", xt_prefix[af], name);
@@ -365,7 +369,7 @@ textify_hooks(char *buf, size_t size, unsigned int mask, uint8_t nfproto)
 
 	return buf;
 }
-
+#if LINUX_VERSION_CODE > KERNEL_VERSION(4, 4, 59)
 /**
  * xt_check_proc_name - check that name is suitable for /proc file creation
  *
@@ -395,7 +399,7 @@ int xt_check_proc_name(const char *name, unsigned int size)
 	return 0;
 }
 EXPORT_SYMBOL(xt_check_proc_name);
-
+#endif
 int xt_check_match(struct xt_mtchk_param *par,
 		   unsigned int size, u_int8_t proto, bool inv_proto)
 {
@@ -566,6 +570,7 @@ void xt_compat_match_from_user(struct xt_entry_match *m, void **dstptr,
 {
 	const struct xt_match *match = m->u.kernel.match;
 	struct compat_xt_entry_match *cm = (struct compat_xt_entry_match *)m;
+	int pad = 0;
 	int off = xt_compat_match_offset(match);
 	u_int16_t msize = cm->u.user.match_size;
 	char name[sizeof(m->u.user.name)];
@@ -577,6 +582,12 @@ void xt_compat_match_from_user(struct xt_entry_match *m, void **dstptr,
 	else
 		memcpy(m->data, cm->data, msize - sizeof(*cm));
 
+#if LINUX_VERSION_CODE > KERNEL_VERSION(4, 4, 59)
+#else
+	pad = XT_ALIGN(match->matchsize) - match->matchsize;
+	if (pad > 0)
+		memset(m->data + match->matchsize, 0, pad);
+#endif
 	msize += off;
 	m->u.user.match_size = msize;
 	strlcpy(name, match->name, sizeof(name));
@@ -733,7 +744,7 @@ int xt_check_entry_offsets(const void *base,
 				    __alignof__(struct xt_entry_match));
 }
 EXPORT_SYMBOL(xt_check_entry_offsets);
-
+#if LINUX_VERSION_CODE > KERNEL_VERSION(4, 4, 59)
 /**
  * xt_alloc_entry_offsets - allocate array to store rule head offsets
  *
@@ -783,7 +794,7 @@ bool xt_find_jump_offset(const unsigned int *offsets,
 	return false;
 }
 EXPORT_SYMBOL(xt_find_jump_offset);
-
+#endif
 int xt_check_target(struct xt_tgchk_param *par,
 		    unsigned int size, u_int8_t proto, bool inv_proto)
 {
@@ -921,6 +932,7 @@ void xt_compat_target_from_user(struct xt_entry_target *t, void **dstptr,
 {
 	const struct xt_target *target = t->u.kernel.target;
 	struct compat_xt_entry_target *ct = (struct compat_xt_entry_target *)t;
+	int pad = 0;
 	int off = xt_compat_target_offset(target);
 	u_int16_t tsize = ct->u.user.target_size;
 	char name[sizeof(t->u.user.name)];
@@ -931,7 +943,12 @@ void xt_compat_target_from_user(struct xt_entry_target *t, void **dstptr,
 		target->compat_from_user(t->data, ct->data);
 	else
 		memcpy(t->data, ct->data, tsize - sizeof(*ct));
-
+#if LINUX_VERSION_CODE > KERNEL_VERSION(4, 4, 59)
+#else
+	pad = XT_ALIGN(target->targetsize) - target->targetsize;
+	if (pad > 0)
+		memset(t->data + target->targetsize, 0, pad);
+#endif
 	tsize += off;
 	t->u.user.target_size = tsize;
 	strlcpy(name, target->name, sizeof(name));
@@ -1137,10 +1154,10 @@ xt_replace_table(struct xt_table *table,
 	 */
 	smp_wmb();
 	table->private = newinfo;
-
+#if LINUX_VERSION_CODE > KERNEL_VERSION(4, 4, 59)
 	/* make sure all cpus see new ->private value */
 	smp_mb();
-
+#endif
 	/*
 	 * Even though table entries have now been swapped, other CPU's
 	 * may still be using the old entries. This is okay, because
@@ -1620,7 +1637,7 @@ void xt_proto_fini(struct net *net, u_int8_t af)
 #endif /*CONFIG_PROC_FS*/
 }
 EXPORT_SYMBOL_GPL(xt_proto_fini);
-
+#if LINUX_VERSION_CODE > KERNEL_VERSION(4, 4, 59)
 /**
  * xt_percpu_counter_alloc - allocate x_tables rule counter
  *
@@ -1673,7 +1690,7 @@ void xt_percpu_counter_free(struct xt_counters *counters)
 		free_percpu((void __percpu *)pcnt);
 }
 EXPORT_SYMBOL_GPL(xt_percpu_counter_free);
-
+#endif
 static int __net_init xt_net_init(struct net *net)
 {
 	int i;
