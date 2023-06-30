@@ -207,7 +207,7 @@ jobs:
           cd /source/input
           [ -z "`grep 'env.mak' Makefile`" ] && sed -i '1 i include /env.mak' Makefile
           PARMS=" `cat "defines" | xargs`"
-          make -j`nproc` -C "${KSRC}" M="${PWD}" ${PARMS} modules
+          make CC=$CC -j`nproc` -C "${KSRC}" M="${PWD}" ${PARMS} modules
           mkdir -p /source/output/modules
           while read F; do
             strip -g "${F}"
