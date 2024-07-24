@@ -1,0 +1,88 @@
+#
+# Copyright (C) 2022 Ing <https://github.com/wjz304>
+#
+# This is free software, licensed under the MIT License.
+# See /LICENSE for more information.
+#
+
+name: Build
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "format %y.%-m.$i or auto"
+        required: false
+        type: string
+
+jobs:
+  build:
+    strategy:
+      matrix:
+        arch: [ x64-7.0, x64-7.2, aarch64-7.0, aarch64-7.2 ] 
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@main
+
+      - name: Free Disk Space (Ubuntu)
+        uses: jlumbroso/free-disk-space@main
+        with:
+          swap-storage: false
+
+      - name: Init Env
+        run: |
+          git config --global user.email "github-actions[bot]@users.noreply.github.com"
+          git config --global user.name "github-actions[bot]"
+          sudo timedatectl set-timezone "Asia/Shanghai"
+
+      - name: Checkout SynoCommunity Source and Docker Image
+        run: |
+          docker pull ghcr.io/synocommunity/spksrc
+          git clone --depth=1 https://github.com/SynoCommunity/spksrc.git
+          cp -rf src/* spksrc
+
+      - name: Build Package
+        run: |
+          ARCH="${{ matrix.arch }}"
+          ROOT_PATH="${{ github.workspace }}"
+
+          sed -i '/^post_kernel_configure_target:/i ifeq ($(call version_ge, ${TC_KERNEL}, 4),1)' mk/spksrc.cross-kernel-configure.mk
+          sed -i '/^post_kernel_configure_target:/i \\t@$(RUN) sed -i "s/__DECOMPRESSION_TYPE__/304403268/" arch/x86/boot/compressed/head_64.S' mk/spksrc.cross-kernel-configure.mk
+          sed -i '/^post_kernel_configure_target:/i \\t@$(RUN) sed -i "s/__DECOMPRESSION_TYPE__/304403268/" lib/synolib/syno_kexec_test.c' mk/spksrc.cross-kernel-configure.mk
+          sed -i '/^post_kernel_configure_target:/i endif' mk/spksrc.cross-kernel-configure.mk
+          
+          docker run -v ${ROOT_PATH}/spksrc:/spksrc -w /spksrc/spk/rr-iptables ghcr.io/synocommunity/spksrc make "arch-${ARCH}"
+          if [ ! -f spksrc/spk/rr-iptables/work-${ARCH}/package.tgz ]; then 
+            echo "${ARCH} build error!"
+            exit 1
+          fi
+
+          mkdir -p ${ROOT_PATH}/modules
+          tar -zxf spksrc/spk/rr-iptables/work-${ARCH}/package.tgz -C ${ROOT_PATH}/modules ./lib
+
+      - name: Pack
+        run: |
+          ROOT_PATH="${{ github.workspace }}"
+          mkdir -p ${ROOT_PATH}/output
+          for I in $(find ./modules -name "*.ko"); do zip -9 ./output/$(echo ${I} | cut -d/ -f5).zip -j ${I}; done
+
+      - name: Upload to Artifacts
+        if: success()
+        uses: actions/upload-artifact@v4
+        with:
+          name: modules-${{ matrix.arch }}
+          path: |
+            output/*.zip
+          retention-days: 5
+
+      - name: Release
+        if: success() && inputs.version != ''
+        uses: ncipollo/release-action@v1
+        with:
+          tag: ${{ inputs.version }}
+          artifacts: |
+            output/*.zip
+          body: |
+            - Editing ...
+
